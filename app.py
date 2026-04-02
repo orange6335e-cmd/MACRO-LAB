@@ -4,13 +4,11 @@ import pandas as pd
 import datetime
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-from fredapi import Fred # 導入 FRED 官方 API 套件
+from fredapi import Fred 
 
 st.set_page_config(page_title="全球總經與市場數據儀表板", layout="wide")
 st.title("📈 總經與市場研究室")
 
-# 讀取藏在 Streamlit Secrets 裡的 API Key
-# 這樣就算程式碼公開在 GitHub，別人也偷不走你的密碼
 try:
     fred = Fred(api_key=st.secrets["FRED_API_KEY"])
 except Exception as e:
