@@ -3,6 +3,9 @@ import yfinance as yf
 import pandas as pd
 import datetime
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots # 載入畫副圖的套件
+import urllib.request 
+import io            
 
 st.set_page_config(page_title="全球總經與市場數據儀表板", layout="wide")
 st.title("📈 總經與市場研究室")
@@ -29,21 +32,30 @@ macro_tickers = {
 }
 
 # === 建立分頁 ===
-tab1, tab2 = st.tabs(["📊 金融市場動態", "🏛️ 總體經濟指標"])
+tab1, tab2 = st.tabs(["📊 金融市場動態 (含技術分析)", "🏛️ 總體經濟指標"])
 
 # --- 頁籤 1: 市場動態 ---
 with tab1:
-    st.header("選擇市場資產")
-    # 下拉式選單
-    selected_asset = st.selectbox("請選擇要查看的標的：", list(market_tickers.keys()))
-    ticker_symbol = market_tickers[selected_asset]
+    st.header("選擇市場資產與技術指標")
+    
+    # 建立兩排欄位：一排選資產，一排選技術指標
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        selected_asset = st.selectbox("請選擇要查看的標的：", list(market_tickers.keys()))
+        ticker_symbol = market_tickers[selected_asset]
+    with col2:
+        show_ma = st.checkbox("顯示 20MA & 60MA", value=True)
+    with col3:
+        show_bb = st.checkbox("顯示布林通道 (BBands)", value=False)
+    with col4:
+        show_vol = st.checkbox("顯示成交量 (Volume)", value=True)
     
     @st.cache_data
     def get_market_data(ticker):
         try:
             stock = yf.Ticker(ticker)
-            data = stock.history(period="2y") # 抓取過去兩年
-            data = data.dropna() # 資料清洗：移除空值，確保數據正確性
+            data = stock.history(period="2y") 
+            data = data.dropna() 
             return data
         except:
             return pd.DataFrame()
@@ -51,13 +63,78 @@ with tab1:
     market_data = get_market_data(ticker_symbol)
 
     if not market_data.empty:
-        # 顯示最新報價
         latest_price = market_data['Close'].iloc[-1]
-        st.metric(label=f"{selected_asset} ({ticker_symbol}) 最新報價", value=f"{latest_price:.2f}")
+        st.metric(label=f"{selected_asset} ({ticker_symbol}) 最新收盤價", value=f"{latest_price:.2f}")
         
-        # 畫圖
-        fig = go.Figure(data=[go.Scatter(x=market_data.index, y=market_data['Close'], mode='lines', name='收盤價')])
-        fig.update_layout(title=f"{selected_asset} 過去兩年走勢", template="plotly_dark")
+        # === 計算技術指標 ===
+        # 計算移動平均線 (MA)
+        market_data['MA20'] = market_data['Close'].rolling(window=20).mean()
+        market_data['MA60'] = market_data['Close'].rolling(window=60).mean()
+        
+        # 計算布林通道 (Bollinger Bands)
+        market_data['BB_mid'] = market_data['Close'].rolling(window=20).mean()
+        market_data['BB_std'] = market_data['Close'].rolling(window=20).std()
+        market_data['BB_upper'] = market_data['BB_mid'] + 2 * market_data['BB_std']
+        market_data['BB_lower'] = market_data['BB_mid'] - 2 * market_data['BB_std']
+
+        # === 繪製互動式圖表 ===
+        # 如果有勾選成交量，就切割出上下兩個子圖；否則只畫一張主圖
+        if show_vol:
+            fig = make_subplots(rows=2, cols=1, shared_xaxes=True, 
+                                vertical_spacing=0.05, row_heights=[0.7, 0.3])
+        else:
+            fig = go.Figure()
+
+        # 1. 畫 K線圖 (Candlestick)
+        candlestick = go.Candlestick(
+            x=market_data.index,
+            open=market_data['Open'], high=market_data['High'],
+            low=market_data['Low'], close=market_data['Close'],
+            name='K線',
+            increasing_line_color='red', decreasing_line_color='green' # 配合台灣習慣：紅漲綠跌
+        )
+        if show_vol:
+            fig.add_trace(candlestick, row=1, col=1)
+        else:
+            fig.add_trace(candlestick)
+
+        # 2. 畫移動平均線
+        if show_ma:
+            ma20 = go.Scatter(x=market_data.index, y=market_data['MA20'], line=dict(color='orange', width=1.5), name='20MA (月線)')
+            ma60 = go.Scatter(x=market_data.index, y=market_data['MA60'], line=dict(color='dodgerblue', width=1.5), name='60MA (季線)')
+            if show_vol:
+                fig.add_trace(ma20, row=1, col=1)
+                fig.add_trace(ma60, row=1, col=1)
+            else:
+                fig.add_trace(ma20)
+                fig.add_trace(ma60)
+
+        # 3. 畫布林通道
+        if show_bb:
+            bb_upper = go.Scatter(x=market_data.index, y=market_data['BB_upper'], line=dict(color='gray', dash='dash'), name='BB 上軌')
+            bb_lower = go.Scatter(x=market_data.index, y=market_data['BB_lower'], line=dict(color='gray', dash='dash'), name='BB 下軌', fill='tonexty', fillcolor='rgba(128,128,128,0.1)')
+            if show_vol:
+                fig.add_trace(bb_upper, row=1, col=1)
+                fig.add_trace(bb_lower, row=1, col=1)
+            else:
+                fig.add_trace(bb_upper)
+                fig.add_trace(bb_lower)
+
+        # 4. 畫成交量副圖
+        if show_vol:
+            # 判斷漲跌給予不同顏色的成交量柱狀圖
+            colors = ['red' if row['Close'] >= row['Open'] else 'green' for index, row in market_data.iterrows()]
+            volume_bar = go.Bar(x=market_data.index, y=market_data['Volume'], marker_color=colors, name='成交量')
+            fig.add_trace(volume_bar, row=2, col=1)
+
+        # 設定圖表外觀
+        fig.update_layout(
+            title=f"{selected_asset} 歷史走勢與技術分析",
+            template="plotly_dark",
+            xaxis_rangeslider_visible=False, # 隱藏下方自帶的滑動條，畫面更乾淨
+            height=700 if show_vol else 500,
+            hovermode="x unified" # 游標移上去時會顯示同一天的所有數據
+        )
         st.plotly_chart(fig, use_container_width=True)
     else:
         st.warning("無法取得該資產數據。")
@@ -72,16 +149,22 @@ with tab2:
     def get_macro_data(ticker):
         try:
             url = f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={ticker}"
-            data = pd.read_csv(url, index_col='DATE', parse_dates=True)
-            # 抓取過去 10 年，看長趨勢
+            headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36'}
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req) as response:
+                csv_data = response.read().decode('utf-8')
+                
+            data = pd.read_csv(io.StringIO(csv_data), index_col='DATE', parse_dates=True)
             start_macro = end_date - datetime.timedelta(days=365*10)
             data = data[data.index >= pd.to_datetime(start_macro)]
             data[ticker] = pd.to_numeric(data[ticker], errors='coerce')
-            data = data.dropna() # 資料清洗
+            data = data.dropna()
             return data
-        except:
+        except Exception as e:
+            st.error(f"抓取 {ticker} 時發生錯誤: {e}")
             return pd.DataFrame()
-
+    
+    # 💡 剛剛遺漏的這一行幫你補上了，這樣才能正確呼叫函數並取得資料
     macro_data = get_macro_data(macro_symbol)
     
     if not macro_data.empty:
