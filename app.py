@@ -4,22 +4,32 @@ import pandas as pd
 import datetime
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-from fredapi import Fred 
+from fredapi import Fred
 
 st.set_page_config(page_title="全球總經與市場數據儀表板", layout="wide")
-st.title("📈 總經與市場研究室")
 
+# 讀取藏在 Streamlit Secrets 裡的 API Key
 try:
     fred = Fred(api_key=st.secrets["FRED_API_KEY"])
 except Exception as e:
     st.error("找不到 FRED API Key！請確認是否已在 Streamlit Secrets 中設定。")
 
+# ==========================================
+# ⚙️ 側邊欄：全域時間範圍控制
+# ==========================================
+st.sidebar.header("⚙️ 儀表板設定")
+# 加入拉桿，讓你可以自由選擇 1 到 30 年
+years = st.sidebar.slider("選擇歷史資料範圍 (年)", min_value=1, max_value=30, value=5, step=1)
+
 end_date = datetime.date.today()
+start_date = end_date - datetime.timedelta(days=365 * years)
+
+st.title("📈 總經與市場研究室")
 
 # === 準備標的字典 ===
 market_tickers = {
-    "S&P 500 指數": "SPY",
-    "台灣加權指數": "^TWII",
+    "S&P 500 ETF (SPY)": "SPY",
+    "台灣 0050 ETF": "0050.TW", # 改用 0050 代替大盤，確保有精準成交量
     "VIX 恐慌指數": "^VIX",
     "美元指數": "DX-Y.NYB",
     "黃金期貨": "GC=F",
@@ -35,39 +45,37 @@ macro_tickers = {
     "10年-2年公債利差 (衰退指標)": "T10Y2Y"
 }
 
-# === 建立分頁 ===
-tab1, tab2 = st.tabs([" 金融市場動態 ", " 總體經濟指標"])
+# === 建立三個分頁 ===
+tab1, tab2, tab3 = st.tabs(["📊 金融市場動態", "🏛️ 總體經濟指標", "⚖️ 雙指標對照分析 (雙Y軸)"])
 
-# --- 頁籤 1: 市場動態 (這部分與上次相同) ---
+# --- 頁籤 1: 市場動態 ---
 with tab1:
-    st.header("選擇市場資產與技術指標")
-    
     col1, col2, col3, col4 = st.columns(4)
     with col1:
-        selected_asset = st.selectbox("選擇標的：", list(market_tickers.keys()))
+        selected_asset = st.selectbox("選擇市場標的：", list(market_tickers.keys()))
         ticker_symbol = market_tickers[selected_asset]
     with col2:
         show_ma = st.checkbox("顯示 20MA & 60MA", value=True)
     with col3:
-        show_bb = st.checkbox("顯示布林通道 (BBands)", value=False)
+        show_bb = st.checkbox("顯示布林通道", value=False)
     with col4:
-        show_vol = st.checkbox("顯示成交量 (Volume)", value=True)
+        show_vol = st.checkbox("顯示成交量", value=True)
     
+    # 💡 防呆：把 start_date 加入快取參數中，這樣拉動拉桿才會觸發重新抓資料
     @st.cache_data
-    def get_market_data(ticker):
+    def get_market_data(ticker, start, end):
         try:
             stock = yf.Ticker(ticker)
-            data = stock.history(period="2y") 
+            data = stock.history(start=start, end=end) 
             data = data.dropna() 
             return data
         except:
             return pd.DataFrame()
 
-    market_data = get_market_data(ticker_symbol)
+    market_data = get_market_data(ticker_symbol, start_date, end_date)
 
     if not market_data.empty:
-        latest_price = market_data['Close'].iloc[-1]
-        st.metric(label=f"{selected_asset} ({ticker_symbol}) 最新收盤價", value=f"{latest_price:.2f}")
+        st.metric(label=f"{selected_asset} 最新收盤價", value=f"{market_data['Close'].iloc[-1]:.2f}")
         
         market_data['MA20'] = market_data['Close'].rolling(window=20).mean()
         market_data['MA60'] = market_data['Close'].rolling(window=60).mean()
@@ -82,15 +90,11 @@ with tab1:
             fig = go.Figure()
 
         candlestick = go.Candlestick(
-            x=market_data.index,
-            open=market_data['Open'], high=market_data['High'],
+            x=market_data.index, open=market_data['Open'], high=market_data['High'],
             low=market_data['Low'], close=market_data['Close'],
             name='K線', increasing_line_color='red', decreasing_line_color='green'
         )
-        if show_vol:
-            fig.add_trace(candlestick, row=1, col=1)
-        else:
-            fig.add_trace(candlestick)
+        fig.add_trace(candlestick, row=1, col=1) if show_vol else fig.add_trace(candlestick)
 
         if show_ma:
             ma20 = go.Scatter(x=market_data.index, y=market_data['MA20'], line=dict(color='orange', width=1.5), name='20MA (月線)')
@@ -117,40 +121,96 @@ with tab1:
             volume_bar = go.Bar(x=market_data.index, y=market_data['Volume'], marker_color=colors, name='成交量')
             fig.add_trace(volume_bar, row=2, col=1)
 
-        fig.update_layout(title=f"{selected_asset} 歷史走勢與技術分析", template="plotly_dark", xaxis_rangeslider_visible=False, height=700 if show_vol else 500, hovermode="x unified")
+        fig.update_layout(title=f"{selected_asset} (過去 {years} 年)", template="plotly_dark", xaxis_rangeslider_visible=False, height=700 if show_vol else 500, hovermode="x unified")
         st.plotly_chart(fig, use_container_width=True)
     else:
         st.warning("無法取得該資產數據。")
 
-# --- 頁籤 2: 總經指標 (改用官方 API) ---
+# --- 頁籤 2: 總經指標 ---
 with tab2:
-    st.header("選擇總經指標")
-    selected_macro = st.selectbox("請選擇要查看的經濟指標：", list(macro_tickers.keys()))
+    selected_macro = st.selectbox("選擇經濟指標：", list(macro_tickers.keys()))
     macro_symbol = macro_tickers[selected_macro]
 
     @st.cache_data
-    def get_macro_data_api(ticker):
+    def get_macro_data_api(ticker, start, end):
         try:
-            # 使用官方 API 抓取資料，語法變得超級簡單！
             data = fred.get_series(ticker)
-            
-            # 轉換成 DataFrame 方便畫圖
             df = pd.DataFrame(data, columns=[ticker])
-            
-            # 抓取過去 10 年
-            start_macro = end_date - datetime.timedelta(days=365*10)
-            df = df[df.index >= pd.to_datetime(start_macro)]
+            df = df[(df.index >= pd.to_datetime(start)) & (df.index <= pd.to_datetime(end))]
             df = df.dropna()
             return df
         except Exception as e:
             st.error(f"透過 API 抓取 {ticker} 時發生錯誤: {e}")
             return pd.DataFrame()
     
-    macro_data = get_macro_data_api(macro_symbol)
+    macro_data = get_macro_data_api(macro_symbol, start_date, end_date)
     
     if not macro_data.empty:
         fig_macro = go.Figure(data=[go.Scatter(x=macro_data.index, y=macro_data[macro_symbol], mode='lines', line=dict(color='orange'))])
-        fig_macro.update_layout(title=f"{selected_macro} 過去十年走勢", template="plotly_dark", hovermode="x unified")
+        fig_macro.update_layout(title=f"{selected_macro} (過去 {years} 年)", template="plotly_dark", hovermode="x unified")
         st.plotly_chart(fig_macro, use_container_width=True)
     else:
         st.warning("目前沒有該總經數據。")
+
+# --- 頁籤 3: 雙指標對照分析 ---
+with tab3:
+    st.markdown("將任何「市場數據」與「總經指標」疊加，觀察兩者的連動關係。系統已自動啟用**雙 Y 軸**。")
+    
+    # 將市場與總經字典合併，讓使用者隨意挑選
+    all_metrics = {**market_tickers, **macro_tickers}
+    
+    colA, colB = st.columns(2)
+    with colA:
+        metric1_name = st.selectbox("🔴 選擇指標 1 (對應左側 Y 軸)：", list(all_metrics.keys()), index=0)
+    with colB:
+        metric2_name = st.selectbox("🔵 選擇指標 2 (對應右側 Y 軸)：", list(all_metrics.keys()), index=list(all_metrics.keys()).index("聯邦基金利率"))
+
+    @st.cache_data
+    def get_unified_data(name, start, end):
+        # 判斷是市場標的還是總經標的，並統一回傳單一欄位的 DataFrame
+        if name in market_tickers:
+            try:
+                df = yf.Ticker(market_tickers[name]).history(start=start, end=end)
+                return df[['Close']].rename(columns={'Close': name})
+            except: return pd.DataFrame()
+        else:
+            try:
+                data = fred.get_series(macro_tickers[name])
+                df = pd.DataFrame(data, columns=[name])
+                df = df[(df.index >= pd.to_datetime(start)) & (df.index <= pd.to_datetime(end))]
+                return df
+            except: return pd.DataFrame()
+
+    df1 = get_unified_data(metric1_name, start_date, end_date)
+    df2 = get_unified_data(metric2_name, start_date, end_date)
+
+    if not df1.empty and not df2.empty:
+        # 💡 資料前處理：因為股市每天開盤，但總經可能一個月才公佈一次
+        # 我們使用 outer join 合併，並用 ffill() 將總經數據往後填補到每一天
+        merged_df = df1.join(df2, how='outer').ffill().dropna()
+
+        # 建立包含雙 Y 軸的畫布
+        fig_compare = make_subplots(specs=[[{"secondary_y": True}]])
+
+        # 加入第一條線 (對應左 Y 軸)
+        fig_compare.add_trace(
+            go.Scatter(x=merged_df.index, y=merged_df[metric1_name], name=metric1_name, line=dict(color='tomato')),
+            secondary_y=False,
+        )
+        # 加入第二條線 (對應右 Y 軸)
+        fig_compare.add_trace(
+            go.Scatter(x=merged_df.index, y=merged_df[metric2_name], name=metric2_name, line=dict(color='dodgerblue')),
+            secondary_y=True,
+        )
+
+        # 設定外觀與雙 Y 軸顏色
+        fig_compare.update_layout(
+            title_text=f"對照分析：{metric1_name} vs {metric2_name} (過去 {years} 年)",
+            template="plotly_dark", hovermode="x unified"
+        )
+        fig_compare.update_yaxes(title_text=metric1_name, secondary_y=False, color='tomato')
+        fig_compare.update_yaxes(title_text=metric2_name, secondary_y=True, color='dodgerblue')
+
+        st.plotly_chart(fig_compare, use_container_width=True)
+    else:
+        st.warning("無法取得部分資料，請檢查選擇的指標。")
