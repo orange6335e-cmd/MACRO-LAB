@@ -18,7 +18,6 @@ except Exception as e:
 # ⚙️ 側邊欄：全域時間範圍控制
 # ==========================================
 st.sidebar.header("⚙️ 儀表板設定")
-# 加入拉桿，讓你可以自由選擇 1 到 30 年
 years = st.sidebar.slider("選擇歷史資料範圍 (年)", min_value=1, max_value=30, value=5, step=1)
 
 end_date = datetime.date.today()
@@ -29,7 +28,7 @@ st.title("📈 總經與市場研究室")
 # === 準備標的字典 ===
 market_tickers = {
     "S&P 500 ETF (SPY)": "SPY",
-    "台灣 0050 ETF": "0050.TW", # 改用 0050 代替大盤，確保有精準成交量
+    "台灣 0050 ETF": "0050.TW",
     "VIX 恐慌指數": "^VIX",
     "美元指數": "DX-Y.NYB",
     "黃金期貨": "GC=F",
@@ -61,7 +60,6 @@ with tab1:
     with col4:
         show_vol = st.checkbox("顯示成交量", value=True)
     
-    # 💡 防呆：把 start_date 加入快取參數中，這樣拉動拉桿才會觸發重新抓資料
     @st.cache_data
     def get_market_data(ticker, start, end):
         try:
@@ -156,7 +154,6 @@ with tab2:
 with tab3:
     st.markdown("將任何「市場數據」與「總經指標」疊加，觀察兩者的連動關係。系統已自動啟用**雙 Y 軸**。")
     
-    # 將市場與總經字典合併，讓使用者隨意挑選
     all_metrics = {**market_tickers, **macro_tickers}
     
     colA, colB = st.columns(2)
@@ -167,17 +164,22 @@ with tab3:
 
     @st.cache_data
     def get_unified_data(name, start, end):
-        # 判斷是市場標的還是總經標的，並統一回傳單一欄位的 DataFrame
         if name in market_tickers:
             try:
                 df = yf.Ticker(market_tickers[name]).history(start=start, end=end)
-                return df[['Close']].rename(columns={'Close': name})
+                df = df[['Close']].rename(columns={'Close': name})
+                # 拔除時區資訊，避免合併衝突
+                df.index = df.index.tz_localize(None)
+                return df
             except: return pd.DataFrame()
         else:
             try:
                 data = fred.get_series(macro_tickers[name])
                 df = pd.DataFrame(data, columns=[name])
                 df = df[(df.index >= pd.to_datetime(start)) & (df.index <= pd.to_datetime(end))]
+                # 確保 FRED 數據也沒有時區資訊
+                if df.index.tz is not None:
+                    df.index = df.index.tz_localize(None)
                 return df
             except: return pd.DataFrame()
 
@@ -185,25 +187,19 @@ with tab3:
     df2 = get_unified_data(metric2_name, start_date, end_date)
 
     if not df1.empty and not df2.empty:
-        # 💡 資料前處理：因為股市每天開盤，但總經可能一個月才公佈一次
-        # 我們使用 outer join 合併，並用 ffill() 將總經數據往後填補到每一天
         merged_df = df1.join(df2, how='outer').ffill().dropna()
 
-        # 建立包含雙 Y 軸的畫布
         fig_compare = make_subplots(specs=[[{"secondary_y": True}]])
 
-        # 加入第一條線 (對應左 Y 軸)
         fig_compare.add_trace(
             go.Scatter(x=merged_df.index, y=merged_df[metric1_name], name=metric1_name, line=dict(color='tomato')),
             secondary_y=False,
         )
-        # 加入第二條線 (對應右 Y 軸)
         fig_compare.add_trace(
             go.Scatter(x=merged_df.index, y=merged_df[metric2_name], name=metric2_name, line=dict(color='dodgerblue')),
             secondary_y=True,
         )
 
-        # 設定外觀與雙 Y 軸顏色
         fig_compare.update_layout(
             title_text=f"對照分析：{metric1_name} vs {metric2_name} (過去 {years} 年)",
             template="plotly_dark", hovermode="x unified"
