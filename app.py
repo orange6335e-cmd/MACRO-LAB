@@ -18,7 +18,7 @@ end_date = datetime.date.today()
 
 # === 準備標的字典 ===
 market_tickers = {
-    "S&P 500 指數": "^SPY",
+    "S&P 500 指數": "SPY",
     "台灣加權指數": "^TWII",
     "VIX 恐慌指數": "^VIX",
     "美元指數": "DX-Y.NYB",
